@@ -91,7 +91,7 @@ def get_google_search_results(
         q=query, 
         cx=cse_id,
         num=n_results, 
-        lr='lang_ja',
+#        lr='lang_ja',
         start=start_index
     ).execute()				
     return result				
@@ -111,13 +111,13 @@ def google_search_results_df(
         1, 
         n_results, 
     )
+    
     total_results = int(data['searchInformation']['totalResults'])				
-    #print('total_results', total_results)				
+    if total_results == 0:
+        # Returns DataFrame with zero items.
+        return pd.DataFrame(columns=["rank", "title", "url", "snippet"])
 
-    try:
-        items = data['items']				
-    except:
-        raise RuntimeError('Couldn\'t get Google search result for unknown reason.')
+    items = data['items']
 				
     result = []				
     num_items = len(items) if len(items) < n_results else n_results

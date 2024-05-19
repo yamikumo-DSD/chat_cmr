@@ -36,6 +36,9 @@ def get_most_suited_index(embeddings, results, query):
     similarities = [np.dot(query_embd, item_embd) for item_embd in results['embedding']]
     return np.argmax(similarities)
 
+
+
+
 class GoogleSearchOpenable:
     """
     Be careful for the indexing. For LLMs best result, using index starting with 1 not zero.
@@ -45,21 +48,22 @@ class GoogleSearchOpenable:
         self, 
         api_key: str,
         cse_id: str,
-        n_results: int = 5, 
+        n_max_results: int = 5, 
         embeddings=None, 
         summarizer=None, 
         custom_summarizing_function=None
     ) -> None:
         """
-        embeddings is an embedding model that used for fuzzy result match.
-        summarizer is a model used to summarize long contents of web pages.
+        Args:
+            n_max_results(int): The maximum number of search results. Not guaranteed to be actual number of hits for uncommon search query.
+            embeddings: An embedding model that used for fuzzy result match.
+            summarizer: A model used to summarize long contents of web pages.
         """
         from lib.tools import summarize
         
         self.embeddings = embeddings
         self.summarizer = summarizer
-        self.n_results = n_results
-        self.opened_flag = [False] * self.n_results
+        self.n_max_results = n_max_results
         self.result = pd.DataFrame()
         self.current_search_query = ''
         self.referred_urls = []
@@ -68,13 +72,15 @@ class GoogleSearchOpenable:
         self.summarizing_function = custom_summarizing_function if custom_summarizing_function else summarize
         
     def unset(self) -> None:
-        self.opened_flag = [False] * self.n_results
         self.current_search_query = ''
         self.result = pd.DataFrame()
         self.referred_urls = []
         
     def not_opened(self) -> list[int]:
         return [index+1 for index, flag in enumerate(self.opened_flag) if not flag]
+
+    def n_hits(self) -> int:
+        return len(self.result)
 
     def set(self, query: str) -> str:
         if not self.result.empty and not (True in self.opened_flag):
@@ -89,13 +95,15 @@ class GoogleSearchOpenable:
                 query, 
                 self.api_key,
                 self.cse_id,
-                self.n_results,
+                self.n_max_results,
             )
+            if len(self.result) == 0:
+                return "1件もヒットしませんでした。"
         except:
             return 'エラーにより検索が実行できませんでした。再度やり直してください。'
-        self.opened_flag = [False] * self.n_results
+        self.opened_flag = [False] * self.n_hits()
         as_str = '\n'
-        for i in range(self.n_results):
+        for i in range(self.n_hits()):
             item = self.result.loc[i]
             as_str = as_str + f'[検索結果{i+1}]\nタイトル:{item["title"]}\n内容:{item["snippet"]}\n'
         return as_str + f'\n*** 検索番号を指定して、内容を確認してください(ツールselectを使用) ***'
@@ -128,7 +136,7 @@ class GoogleSearchOpenable:
         match = re.search(r'結果([0-9]+)', text)
         if match: 
             index = int(match.group(1))
-            if index < self.n_results + 1:
+            if index < self.n_hits() + 1:
                 return index
         return None
 
@@ -156,7 +164,7 @@ class GoogleSearchOpenable:
             i = get_most_suited_index(self.embeddings, self.result, query=open_request_index) + 1
             return self.check_flag_and_open(i)
             
-        for i in range(1, self.n_results + 1):
+        for i in range(1, self.n_hits() + 1):
            if str(i) in open_request_index:
                return self.check_flag_and_open(i)
         return f'有効な検索結果{self.not_opened()}の中から選択してください。'

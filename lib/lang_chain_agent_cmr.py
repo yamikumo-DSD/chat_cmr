@@ -1,16 +1,15 @@
 from typing import List
 from langchain.agents import Tool
 from langchain.prompts import BaseChatPromptTemplate
-from lib.utils import now
 from pydantic import Field
 
-DEFAULT_TEMPLATE = """<BOS_TOKEN><|START_OF_TURN_TOKEN|><|SYSTEM_TOKEN|># System Preamble
+DEFAULT_TEMPLATE = """<|START_OF_TURN_TOKEN|><|SYSTEM_TOKEN|># System Preamble
 ## Basic Rules
 与えられたToolを使ってQuestionに対するFinal Answerを作成してください。
 
 ## Basic Format
 Thought: Actionに移る前に常に何をすべきかを考えるようにしてください。
-Action: [{tool_names}]から1つだけActionとして選んでください。Actionの名前以外はここには絶対に含めてはいけません。
+Action: [{tool_names}]からActionを1つ選択し、その名前だけ記入します(その他の情報は書いてはいけない)。
 Action Input: Actionに対する入力。選択したActionに合う形にしてください。
 Observation: Actionの結果得られた情報。
 ...(Thought/Action/Action Input/Observationを答えが出るまで繰り返す。)
@@ -19,9 +18,7 @@ Final Answer: Questionに対する最終的な答えです。かならずこの�
 
 # User Preamble
 ## Available Tools
-{tools}<|END_OF_TURN_TOKEN|><|START_OF_TURN_TOKEN|><|USER_TOKEN|>Question: {input}<|END_OF_TURN_TOKEN|><|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>Thought: {agent_scratchpad}"""
-
-DEFAULT_TEMPLATE = DEFAULT_TEMPLATE.replace('{now}', now())
+{tools}<|END_OF_TURN_TOKEN|><|START_OF_TURN_TOKEN|><|USER_TOKEN|>Question: {input}<|END_OF_TURN_TOKEN|>{agent_scratchpad}"""
 
 class CustomPromptTemplate(BaseChatPromptTemplate):
     template: str
@@ -32,22 +29,20 @@ class CustomPromptTemplate(BaseChatPromptTemplate):
         intermediate_steps = kwargs.pop("intermediate_steps")
         thoughts = ""
         for action, observation in intermediate_steps:
-            # We don't want error messages piling up.
-            if action.tool == '_Exception': continue
-            thoughts += action.log
-            thoughts += f"\nObservation: {observation}\nThought: "
+            thoughts += f"<|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>{action.log}<|END_OF_TURN_TOKEN|>"
+            thoughts += f"<|START_OF_TURN_TOKEN|><|SYSTEM_TOKEN|>Observation: {observation}<|END_OF_TURN_TOKEN|>"
             
         current_iterations = len(intermediate_steps)
-        if current_iterations == self.max_iterations // 2:
-            input = kwargs['input']
-            thoughts += f'ここまでの情報で、"{input}"に対するFinal Answerが生成できるか考えてみよう。'
         if (self.max_iterations != None) and (current_iterations >= self.max_iterations - 2):
-            thoughts += '以上の情報で、Final Answerを生成しよう。'
+            thoughts += "<|START_OF_TURN_TOKEN|><|SYSTEM_TOKEN|>繰り返し回数が上限に近づいています。そろそろFinal Answerを生成してください。<|END_OF_TURN_TOKEN|>"
+            
+        thoughts += "<|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>Thought: "
             
         kwargs["agent_scratchpad"] = thoughts
         kwargs["tools"] = "\n".join([f"{tool.name}: {tool.description}" for tool in self.tools])
         kwargs["tool_names"] = ",".join([tool.name for tool in self.tools])
         formatted = self.template.format(**kwargs)
+        #print(formatted)
         return [HumanMessage(content=formatted)]
 
 
@@ -68,16 +63,13 @@ class CustomOutputParser(AgentOutputParser):
         regex = r"Action\s*\d*\s*:(.*?)\nAction\s*\d*\s*Input\s*\d*\s*:[\s]*(.*)"
         match = re.search(regex, llm_output, re.DOTALL)
         if not match:
-            raise OutputParserException(f'Could not parse LLM output. ({llm_output})')
+            raise OutputParserException(llm_output)
         else:
             action = match.group(1).strip().lower()
-            for tool_name in self.allowed_tools:
-               if tool_name in action:
-                   action = tool_name
             action_input = match.group(2)
         return AgentAction(tool=action, tool_input=action_input.strip(" ").strip('"'),log=llm_output)
 
-handle_parsing_errors = 'あなたの出力は"Action: "あるいは"Final Answer: "で始まらなければなりません。'
+handle_parsing_errors = '形式に問題があります。少なくとも"Action: "を指定して継続するか、"Final Answer: "を生成して終了する必要があります。'
 
 def create_agent_executor(
     model, 
@@ -110,7 +102,7 @@ def create_agent_executor(
     agent = LLMSingleActionAgent(
         llm_chain=llm_chain,
         output_parser=parser,
-        stop=["\nObservation:", "--", "***", '\n\n\n'],
+        stop=["\nObservation:"], # This is important cuz LLMs try to produce Observation on their own.
         allowed_tools=[tool.name for tool in tools]
     )
     
@@ -122,21 +114,3 @@ def create_agent_executor(
         max_iterations=max_iterations,
         **kwargs
     )
-
-
-def get_valid_intermediate_steps_as_merged_text(
-    agent_response,
-    ignore_exception: bool = True
-) -> str:
-    merged = ''
-    
-    for step in agent_response['intermediate_steps']:
-        metadata = step[0]
-        observation = step[1]
-        if ignore_exception: 
-            if metadata.tool == '_Exception': continue
-
-        merged += metadata.log + '\n' + observation + '\n\n'
-
-    return merged
-
