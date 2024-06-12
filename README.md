@@ -13,6 +13,7 @@ This is LLM inference GUI for Jupyter notebook, with default prompt for Cohere C
 <br>
 <h3>Prerequisite</h3>
 1. Jupyter must be installed.<br>
+<code>pip install jupyterlab</code><br>
 2. Activate ipywidgets by one of following commands:<br>
 # jupyter-lab<br>
 <code>jupyter labextension install @jupyter-widgets/jupyterlab-manager</code><br>
