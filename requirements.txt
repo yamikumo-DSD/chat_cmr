@@ -1,0 +1,25 @@
+# IPywidgets
+ipywidgets
+
+# LLM endpoints
+llama-cpp-python
+langchain
+
+# Text-to-speech
+style-bert-vits2
+alkana
+
+# Scraping and RAG
+google-api-python-client
+selenium
+beautifulsoup4
+pdfplumber
+youtube_transcript_api
+duckduckgo-search
+
+# Code formatter
+black
+Pygments
+
+# Other fundementals
+pandas
