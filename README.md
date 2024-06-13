@@ -1,6 +1,7 @@
 <h2>LLM inference GUI for Jupyter notebook</h2>
 <br>
-This is LLM inference GUI for Jupyter notebook, with default prompt for Cohere Command R/Command R+.<br>
+This is an LLM-powered chat interface integrated with voice synthesis model, web search-based RAG, and python environment.<br>
+For better results, I strongly recommend you to select a model large enough or trained for tool use.<br>
 <br>
 <h3>Features</h3>
 1. Streaming output.<br>
@@ -20,4 +21,9 @@ $ jupyter labextension install @jupyter-widgets/jupyterlab-manager
 # jupyter notebook / Google Colab<br>
 $ jupyter nbextension enable --py widgetsnbextension</code></pre>
 3. Install dependencies.<br>
-<code>$ pip install -r requirements.txt</code>
+<code>$ pip install -r requirements.txt</code><br>
+<h2>Screen Shots</h2>
+<h3>Python execution</h3>
+<img src=https://github.com/yamikumo-DSD/chat_cmr/blob/main/SS1.png>
+<h3>Web search</h3>
+<img src=https://github.com/yamikumo-DSD/chat_cmr/blob/main/SS2.png>
