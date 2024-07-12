@@ -111,8 +111,8 @@ class WebSearch(BaseTool):
         # Collect documents.
         documents = pick_relevant_web_documents(
             input, 
-            #embedding=MultilingualE5Small(),
-            embedding=JinaRerankerMultilingual(),
+            embedding=MultilingualE5Small(),
+            #embedding=JinaRerankerMultilingual(),
             engine="duckduckgo",
             n_relevant_chunks=3,
             n_search_results=20,
