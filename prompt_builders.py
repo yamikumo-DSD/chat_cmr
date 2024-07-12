@@ -344,11 +344,13 @@ class Gemma2Instruct(PromptBuilderBase):
         
     def assistant_token(self, text: str) -> str:
         return f"""<start_of_turn>model
-{text}<end_of_turn>"""
+{text}<end_of_turn>
+"""
         
     def user_token(self, text: str) -> str:
         return f"""<|start_of_turn|>user
-{text}<end_of_turn>"""
+{text}<end_of_turn>
+"""
         
 
     def render_item(self, item) -> str:
