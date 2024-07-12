@@ -30,7 +30,7 @@ After running the command, edit following line of the config file:<br>
 <code>c.ServerApp.tornado_settings = {"websocket_max_message_size":100*1024*1024}</code><br>
 <hr>
 <h2>Screen Shots</h2>
-<h3>Python execution</h3>
-<img src=https://github.com/yamikumo-DSD/chat_cmr/blob/main/SS1.png width="300px">
-<h3>Web search/Image Recognition</h3>
-<img src=https://github.com/yamikumo-DSD/chat_cmr/blob/main/SS2.png width="300px">
+<div style="display: flex;">
+  <img src="https://github.com/yamikumo-DSD/chat_cmr/blob/main/SS1.png" width="300px">
+  <img src="https://github.com/yamikumo-DSD/chat_cmr/blob/main/SS2.png" width="300px">
+</div>
