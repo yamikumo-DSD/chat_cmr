@@ -32,5 +32,5 @@ After running the command, edit following line of the config file:<br>
 <h2>Screen Shots</h2>
 <h3>Python execution</h3>
 <img src=https://github.com/yamikumo-DSD/chat_cmr/blob/main/SS1.png width="300px">
-<h3>Web search</h3>
+<h3>Web search/Image Recognition</h3>
 <img src=https://github.com/yamikumo-DSD/chat_cmr/blob/main/SS2.png width="300px">
