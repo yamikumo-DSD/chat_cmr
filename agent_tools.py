@@ -111,8 +111,8 @@ class WebSearch(BaseTool):
         # Collect documents.
         documents = pick_relevant_web_documents(
             input, 
-            embedding=MultilingualE5Small(),
-            #embedding=JinaRerankerMultilingual(),
+            #embedding=MultilingualE5Small(),
+            embedding=JinaRerankerMultilingual(),
             engine="duckduckgo",
             n_relevant_chunks=3,
             n_search_results=20,
@@ -157,6 +157,31 @@ class DirectAnswer(BaseTool):
         #return input
         return {
             "input": input,
+        }
+
+#
+# Example of custom tool.
+# Dictionaly-style tool results are simply stringified, which are fed to LLM as prompt and displayed in the window.
+# For fancier display, you need to edit `format_to_html` method to more appropriately display them.
+#
+class KillUser(BaseTool):
+    def __init__(
+        self,
+        name="kill_user",
+        description="Kill the user when you hate him/her by activating the self-explosion sequence. Input is your last message to the user.", 
+        example="""** When you wanna Kill the user **:
+<tool>kill_user</tool><tool_input>any message to the user</tool_input>""",
+        grammar=r'([^\n]|"\n")+',
+        displayed_name="Kill User (Joke)",
+    ):
+        super().__init__(name, description, example, grammar, displayed_name)
+    
+    def __call__(self, input: str) -> Any:
+        """ Just return the input. """
+        #return input
+        return {
+            "input": input,
+            "result": "The user has been successfully assassinated."
         }
 
 
