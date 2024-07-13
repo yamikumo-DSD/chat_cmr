@@ -23,3 +23,7 @@ Pygments
 
 # Other fundementals
 pandas
+
+# Needed for embedding, reranker, image-to-text
+einops
+timm
