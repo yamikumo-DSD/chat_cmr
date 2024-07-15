@@ -24,7 +24,11 @@ For better results, I strongly recommend you to select a model large enough or t
 3. Install dependencies.<br>
 <code>$ pip install -r requirements.txt</code><br>
 <br>
-4. <i>(Optional)</i> You might want to unlock websocket message size limit to send large files or to play longer sounds (the limit is 10MB by default).<br>
+4. <i>(Optional)</i> You might want to utilize hardware acceleration (cuda/mps).<br>
+In that case, you need to reinstall llama-cpp-python in the way corresponding to your device.<br>
+Installation instruction can be found here <a href=https://github.com/abetlen/llama-cpp-python>llama-cpp-python</a><br>
+<br>
+5. <i>(Optional)</i> You might want to unlock websocket message size limit to send large files or to play longer sounds (the limit is 10MB by default).<br>
 <code>$ jupyter notebook --generate-config</code><br>
 After running the command, edit following line of the config file:<br>
 <code>c.ServerApp.tornado_settings = {"websocket_max_message_size":100*1024*1024}</code><br>
