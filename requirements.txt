@@ -25,5 +25,6 @@ Pygments
 pandas
 
 # Needed for embedding, reranker, image-to-text
+flash_attn
 einops
 timm
