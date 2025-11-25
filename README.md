@@ -23,14 +23,16 @@ For better results, I strongly recommend you to select a model large enough or t
 8. Screenshot <br>
 <br>
 <h2>Prerequisite</h2>
-1. Jupyter must be installed.<br>
+1. Install the latest llama-cpp-python.<br>
+<code>pip install llama-cpp-python</code><br>
+2. Jupyter must be installed.<br>
 <code>$ pip install jupyterlab</code><br>
-2. Activate ipywidgets by one of following commands:<br>
+3. Activate ipywidgets by one of following commands:<br>
 <pre><code># jupyter-lab
 $ jupyter labextension install @jupyter-widgets/jupyterlab-manager
 # jupyter notebook / Google Colab<br>
 $ jupyter nbextension enable --py widgetsnbextension</code></pre>
-3. Install dependencies.<br>
+4. Install dependencies.<br>
 <code>$ pip install -r requirements.txt</code><br>
 <h2>Screen Shots</h2>
 <h3>Python execution</h3>
