@@ -1,4 +1,4 @@
-<h2>LLM inference GUI for Jupyter notebook</h2>
+<h2>LLM Chat Agent for Jupyter</h2>
 <br>
 This is an LLM-powered chat interface integrated with a lot of useful tools.<br>
 For better results, I strongly recommend you to select a model large enough or trained for tool use.<br>
