@@ -1,6 +1,7 @@
 <h2>LLM Chat Agent for Jupyter</h2>
 <br>
-This is an LLM-powered chat interface integrated with a lot of useful tools.<br>
+This is an llama-cpp-python-engined LLM-powered chat interface integrated with a lot of useful tools.<br>
+Load your favorite GGUF and enjoy!<br>
 For better results, I strongly recommend you to select a model large enough or trained for tool use.<br>
 <br>
 <h3>Features</h3>
