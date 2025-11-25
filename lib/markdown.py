@@ -16,22 +16,22 @@ def _guard_code(replace_func):
         # Replace with placeholders.
 
         # Fences.
-        regex_fenced = re.compile(r'(```(\w+)?\n(.*?)\n```)', re.DOTALL)
+        regex_fenced = re.compile(r'(\s*```(\w+)?\n(.*?)\n\s*```)', re.DOTALL)
         fences = [fence[0] for fence in re.findall(regex_fenced, text)] # Captured fenced codes.
-        text = indexed_placeholders(text, regex_fenced, "[|fence_{num}|]")
+        text = indexed_placeholders(text, regex_fenced, "[@fence_{num}@]")
         
         # Inlines.
         regex_inline = r"(`[^`\n]+?`)"
         inlines = re.findall(regex_inline, text)
-        text = indexed_placeholders(text, regex_inline, "[|inline_{num}|]")
+        text = indexed_placeholders(text, regex_inline, "[@inline_{num}@]")
         
         text = replace_func(text, **kwargs)
 
         for i in range(len(fences)):
-            placeholder = f"[|fence_{i}|]"
+            placeholder = f"[@fence_{i}@]"
             text = text.replace(placeholder, fences[i])
         for i in range(len(inlines)):
-            placeholder = f"[|inline_{i}|]"
+            placeholder = f"[@inline_{i}@]"
             text = text.replace(placeholder, inlines[i])
             
         return text
@@ -86,7 +86,7 @@ def replace_table(text) -> str:
 
 def replace_code(text) -> str:
     # Fenced.
-    regex = re.compile(r'```(\w+)?\n(.*?)\n?```', re.DOTALL)
+    regex = re.compile(r'\s*```(\w+)?\n(.*?)\n?\s*```', re.DOTALL)
     def replacer(match) -> str:
         lang = match.group(1)
         content = replace_charref(match.group(2))
@@ -94,7 +94,7 @@ def replace_code(text) -> str:
     text = re.sub(regex, replacer, text)
     
     # Inline.
-    regex = r"`([^`]+?)`"
+    regex = r"`([^`\n]+?)`"
     def replacer(match) -> str:
         content = replace_charref(match.group(1))
         return f"<code>{content}</code>"
@@ -182,6 +182,10 @@ def replace_unordered_list(text):
 
     return text
 
+@_guard_code
+def replace_link(text):
+    return re.sub(r"\[(.+?)\]\((https?://.+?)\)", r"<a href=\2>\1</a>", text)
+
 
 def convert(text) -> str:
     #text = replace_charref(text)
@@ -191,7 +195,8 @@ def convert(text) -> str:
     text = replace_heading(text)
     text = replace_horizon(text)
     text = replace_blockquote(text)
-    text = replace_unordered_list(text)
+    #text = replace_unordered_list(text)
+    text = replace_link(text)
     text = replace_newline(text)
     
     text = replace_code(text)
@@ -200,7 +205,7 @@ def convert(text) -> str:
         "h1", "h2", "h3", "h4", "h5", "h6",
         "table", "hr", "blockquote", "pre", "p",
         "ul", "ol", "li",
-    ]
+    ] # Tags automatically break lines.
     for tag in tags:
         text = _remove_excess_brs(text=text, tag_name=tag)
     

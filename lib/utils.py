@@ -1,74 +1,10 @@
-import re
+from typing import Iterable
+from typing import Any, Callable
+from lib.text_utils import *
+from warnings import simplefilter
 
+ignore_warnings = lambda : simplefilter('ignore')
 
-def now() -> str:
-    import datetime
-    now = datetime.datetime.now()
-    weekday = ['月', '火', '水', '木', '金', '土', '日']
-    return f'{now.year}年{now.month}月{now.day}日 {weekday[now.weekday()]}曜日 {now.hour}時{now.minute}分'
-
-def unbox_bracket(bracket: str, text: str) -> str:
-    """ 
-    Unbox bracket in the most outer position. Type of bracket can be given as a pair like '[]'.
-    For example, '[hello]' is unboxed into 'hello'.
-    Spaces before beginning bracket and after ending bracket are ignored.
-    """
-    if len(bracket) != 2: raise RuntimeError('The argument bracket only contains beginning and ending bracket.')
-    begin, end = map(re.escape, bracket)  # Escape the bracket characters to use in regex pattern
-    pattern = rf"^\s*{begin}(.*?){end}\s*$"
-    content = re.search(pattern, text, flags=re.DOTALL)
-    return content.group(1) if content else text
-
-
-def caps2katakana(text: str) -> str:
-    alphabet_to_katakana = {
-        'A': 'エー', 'B': 'ビー', 'C': 'シー', 'D': 'ディー', 'E': 'イー',
-        'F': 'エフ', 'G': 'ジー', 'H': 'エイチ', 'I': 'アイ', 'J': 'ジェー',
-        'K': 'ケー', 'L': 'エル', 'M': 'エム', 'N': 'エヌ', 'O': 'オー',
-        'P': 'ピー', 'Q': 'キュー', 'R': 'アール', 'S': 'エス', 'T': 'ティー',
-        'U': 'ユー', 'V': 'ヴィー', 'W': 'ダブリュー', 'X': 'エックス', 'Y': 'ワイ', 'Z': 'ゼット'
-    }
-    def convert_to_katakana(match):
-        return ''.join(alphabet_to_katakana[char] for char in match.group())
-    pattern = r'[A-Z]{2,}'
-    return re.sub(pattern, convert_to_katakana, text)
-
-def english2katakana(word):
-    import alkana
-    return alkana.get_kana(word)
-
-def mixed2katakana(text):
-    pattern = re.compile(r'[A-Za-z]+')
-    text = caps2katakana(text)
-    text = pattern.sub(lambda x: english2katakana(x.group()), text)
-    return text
-    
-    
-def split_text(text, delimiters = [' ', ';', ':', '—', '。', '　', '♡', '', '!', '?', '！', '？', '\n'], max_length=100):
-    # Create a pattern that matches the delimiters and keeps them in the results
-    pattern = f"({'|'.join([re.escape(d) for d in delimiters if d])})"
-    # Use findall to include delimiters in the results
-    words_and_delimiters = re.findall(f"([^{''.join([re.escape(d) for d in delimiters if d])}]+|{'|'.join([re.escape(d) for d in delimiters if d])})", text)
-    chunks = []
-    current_chunk = ''
-    
-    for wd in words_and_delimiters:
-        if len(current_chunk) + len(wd) > max_length:
-            # If adding the next word exceeds max_length, start a new chunk
-            chunks.append(current_chunk)
-            current_chunk = wd
-        else:
-            # Else, add the word/delimiter to the current chunk
-            current_chunk += wd
-
-    if current_chunk:
-        chunks.append(current_chunk)
-
-    # For the case there are no deliminaters in the text.
-    def force_breakdown_strings(strings, thresh: int):
-        return [s[i:i+thresh] for s in strings for i in range(0, len(s), thresh)]
-
-    return force_breakdown_strings(chunks, thresh=max_length)
     
 def change_directory(new_directory):
     import os
@@ -91,81 +27,172 @@ def get(x: dict, key: str):
     return x.get(key)
 
 
+def slice_true(x: Iterable, truth_values: Iterable[bool]):
+    assert len(x) == len(truth_values), f"Length of x({len(x)}) and truth_values({len(truth_values)}) must match."
+    return [item for item, truth_value in zip(x, truth_values) if truth_value]
+    
 
-def fix_indentation(code: str, indentation: int = 4):
+class Observable:
+    _value: Any|Callable[[], Any]
+    _unobserve: bool = True
+    _is_nullary_function: bool
+    def __init__(
+        self, 
+        value: Any|Callable[[], Any],
+        is_nullary_function: bool = False,
+    ) -> None:
+        """
+        Args:
+            value: initial value or function w/o arguments.
+            is_nullary_function: if True, it observes changes in `value.__call__()` instead of the value itself.
+        """
+        self._value = value
+        self._is_nullary_function = is_nullary_function
+
+    @property
+    def value(self) -> Any:
+        return self._value() if self._is_nullary_function else self._value
+
+    @value.setter
+    def value(self, new_value) -> None:
+        assert not self._is_nullary_function, "Nullary function value cannot be changed."
+        self._value = new_value
+
+    def unobserve(self) -> None:
+        self._unobserve = True
+
+    def observe(
+        self, 
+        on_change: Callable, 
+        args: tuple = (), 
+        interval: float = 1.,
+    ) -> None:
+        """
+        on_change: callback
+        args: callback arguments
+        interval: sec
+        """
+        import asyncio
+        from nest_asyncio import apply
+        apply()
+
+        self._unobserve = False
+
+        async def monitor() -> None:
+            while not self._unobserve:
+                prev = self.value
+                await asyncio.sleep(interval)
+                if prev != self.value:
+                    on_change(*args)
+
+        asyncio.create_task(monitor())
+
+
+
+
+def split_list(input_list, n):
     """
-    Replace 4*n+1(n=0, 1, 2, ...) spaces by 4*n
-    Number of spaces for an indentation can be specified by argument "indentation".
-    This function is mainly utilized to fix output of quantized command-r-plus, and hence in most cases, this is unnecessary.
-    """
-    lines = code.splitlines()
-    new_lines = []
-    for line in lines:
-        space_count = len(re.match(r"^ *", line).group())
-
-        if space_count % 4 == 1:
-            line = line[1:] # Remove single ' '.
-
-        new_lines.append(line)
-
-    return "\n".join(new_lines)
-
-
-def strip_fence(code: str) -> str:
-    import re
-    pattern = re.compile(r'```(\w+)?\n(.*?)\n```', re.DOTALL)
-    match = re.search(pattern, code)
-    return match.group(2).strip() if match else code
-
-
-def reformat_python_code(code: str) -> str:
-    import black
-    code = fix_indentation(code)
-    code = strip_fence(code)
-    try:  code = black.format_str(code, mode=black.Mode())
-    except:  pass
-    return code
-
-
-def replace_text(text, replacement_dict):
-    for key, value in replacement_dict.items():
-        text = text.replace(key, value)
-    return text
-
-
-
-
-def indexed_placeholders(target: str, pattern: str, placeholder: str, key: str = "num"):
-    """
-    Replace substrings in target matched to the pattern by indexed placeholder.
+    Split a list into approximately equal sized chunks
     
     Args:
-        target: Target string containing some pattern.
-        pattern: Regex string.
-        placeholder: Format string containing "{num}" replaced by indexes.
-        key: Used if you don't want to use "num" as a key.
-
-    Retuned:
-        Replace string.
-    
-    Example:
-        target="**alphabeta**"
-        pattern=r"(alpha|beta)"
-        placeholder="<|{num}|>"
-        key="num"
-        -> Retuned string is gonna be "**<|0|><|1|>**"
+        input_list (list): The list to be split
+        n (int): Number of desired chunks
+        
+    Returns:
+        list: List of chunks
     """
-    import re
+    total_length = len(input_list)
+    base_size = total_length // n
+    remainder = total_length % n
     
-    matches = list(re.finditer(pattern, target))
+    chunks = []
+    start = 0
+    
+    for i in range(n):
+        end = start + base_size + (1 if i < remainder else 0)
+        chunks.append(input_list[start:end])
+        start = end
+        
+    return chunks
 
-    offset = 0
-    for i, match in enumerate(matches):
-        start, end = match.start() + offset, match.end() + offset
-        current_placeholder = placeholder.format(**{key: str(i)})
-        target = target[:start] + current_placeholder + target[end:]
-        offset += len(current_placeholder) - (end - start)
-
-    return target
 
 
+    
+def is_valid_path(text):
+    """
+    Check if the text is a valid path
+
+    Args:
+        text (str): Text to check
+
+    Returns:
+        dict: {
+            'is_valid': bool,  # Whether the format is valid as a path
+            'exists': bool,     # Whether it actually exists on filesystem
+            'absolute': bool,   # Whether it's an absolute path
+            'message': str       # Detailed message
+        }
+    """
+    import os
+    from pathlib import Path
+
+    if not isinstance(text, str) or not text.strip():
+        return {
+            "is_valid": False,
+            "exists": False,
+            "absolute": False,
+            "message": "Empty string or non-string input",
+        }
+
+    # Check path format based on OS (simplified version)
+    is_valid_format = True
+    message_parts = []
+
+    if os.name == "nt":  # Windows
+        if len(text) > 1 and text[1] == ":":
+            # Drive letter (C:, D: etc.)
+            if not text[0].isalpha():
+                is_valid_format = False
+                message_parts.append("Invalid drive letter")
+        elif "\\" in text:
+            # Contains backslash
+            pass
+    else:  # Unix-like systems
+        if text.startswith("/"):
+            # Absolute path
+            pass
+        elif "/" in text:
+            # Relative path
+            pass
+
+    # Invalid path format
+    if not is_valid_format:
+        return {
+            "is_valid": False,
+            "exists": False,
+            "absolute": False,
+            "message": " ".join(message_parts) or "Invalid path format",
+        }
+
+    # Check if it's an absolute path
+    is_absolute = os.path.isabs(text)
+
+    try:
+        # Check if the path exists
+        path_exists = os.path.exists(text)
+
+        if path_exists:
+            message_parts.append("Exists")
+        else:
+            message_parts.append("Does not exist")
+
+    except (OSError, TypeError) as e:
+        path_exists = False
+        message_parts.append(f"Cannot access: {str(e)}")
+
+    return {
+        "is_valid": True,
+        "exists": path_exists,
+        "absolute": is_absolute,
+        "message": " ".join(message_parts),
+    }

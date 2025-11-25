@@ -1,14 +1,27 @@
 import IPython
 
 import ipywidgets as widgets
+from ipywidgets import Layout
 
-def ipyplayaudio(x, show: bool = True) -> None|IPython.display.Audio:
-    rate = 48000
-    audio = IPython.display.Audio(x, rate=rate, autoplay=True)
-    if show:
-        display(audio)
-    else:
-        return audio
+def button_method(button: widgets.Button):
+    def decorator(func):
+        from functools import wraps
+        button.on_click(func)
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
+    
+def value_change_method(widget):
+    def decorator(func):
+        from functools import wraps
+        widget.observe(func, "value")
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
     
 def activate_cancel_ui(wait_sec: int) -> bool:
     import time
@@ -75,19 +88,27 @@ class Switchable(widgets.Output):
         return obj.get_switch(), obj
 
 
+
 class Checkboxes:
     _items: list[widgets.Checkbox]
     _disabled: bool
     def __init__(
         self, 
         descriptions: list[str],
+        values: list[bool]|None = None,
     ) -> None:
+        if not values:
+            values = [True for _ in range(len(descriptions))]
+        if values and len(descriptions) != len(values):
+            raise ValueError(f"Length of values({len(values)}) and descriptions({len(descriptions)}) doesn't match.")
+            
         self._items = []
         self._disabled = False
-        for description in descriptions:
+        for i, description in enumerate(descriptions):
            self._items.append(widgets.Checkbox(
                description=description, 
-               value=True,
+               value=values[i],
+               layout=Layout(width="auto"),
                style={"description_width": 'initial'},
            ))
     def display(self) -> None:
@@ -107,3 +128,68 @@ class Checkboxes:
         else:
             for item in self._items:
                 item.disabled = False
+    def __iter__(self):
+        return iter(self._items)
+    
+    def __len__(self):
+        return len(self._items)
+    
+    def __getitem__(self, index):
+        return self._items[index]
+
+
+
+def display_center_aligned(widget) -> None:
+    from ipywidgets import HBox
+    from IPython.display import display
+    display(HBox(
+        [widget], 
+        layout = widgets.Layout(
+            display="flex",
+            justify_content="center",
+        )
+    ))
+
+
+class ThreadSafeStdOutCapture:
+    """
+    A wrapper to port stdout/stderr into Output widget.
+    Reason why this wrapper is needed:
+        Normal context manager `with output:` doesn't actually capture outputs in thread or async method.
+        ipywidgets privides workarounds to avoid it, which is "append"-family;
+        
+        `output.append_stdout`
+        `output.append_stderr`
+        `output.append_display_data`.
+
+        This context managing class automatically capture stdout/stderr and send them to the `append_stdout`.
+    """
+    def __init__(self, output_widget: widgets.Output) -> None:
+        from io import StringIO
+        self._output = output_widget
+        self._buf = StringIO()
+        self._is_entering = False
+        
+    def __enter__(self):
+        from contextlib import redirect_stdout, redirect_stderr
+        if self._is_entering:
+            raise RuntimeError("with statement of same instances of ThreadSaveStdOutCapture should not be nested or similteneously executed.")
+        self._is_entering = True
+        self._stdout_redirect = redirect_stdout(self._buf)
+        self._stderr_redirect = redirect_stderr(self._buf)
+        self._stdout_redirect.__enter__()
+        self._stderr_redirect.__enter__()
+        return self._buf
+        
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self._is_entering = False
+        self._stdout_redirect.__exit__(exc_type, exc_value, traceback)
+        self._stderr_redirect.__exit__(exc_type, exc_value, traceback)
+        self._output.append_stdout(self._buf.getvalue())
+
+    def clear_output(self) -> None:
+        from io import StringIO
+        self._output.outputs = ()
+        self._buf = StringIO()
+
+

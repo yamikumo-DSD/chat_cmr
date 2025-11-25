@@ -1,4 +1,6 @@
 from collections import deque
+from typing import Any
+from typing import Any, Iterator, List, Mapping, Optional
 
 class ForgetableContext:
     __history: deque
@@ -63,128 +65,8 @@ class ForgetableContext:
             raise StopIteration
 
 
-class LlamaCppWrapper:
-    def __init__(self, *args, **kwargs) -> None:
-        from llama_cpp import Llama
-        self.model = Llama(*args, **kwargs)
-        
-    def __call__(self, *args, **kwargs) -> str:
-        stream = kwargs['stream'] if 'stream' in kwargs.keys() else False
-        
-        if not stream:
-            out = self.model(*args, **kwargs)
-            return out['choices'][0]['text']
-
-        def wrapper():
-            generator = self.model(*args, **kwargs)
-            for out in generator:
-                yield out['choices'][0]['text']
-
-        return wrapper()
-
-    def create_embedding(self, text: list[str]):
-        """llama-cpp-python compatible API."""
-        return self.model.create_embedding(text)
-
-    def embed_query(self, query: str) -> list:
-        """langchain-community compatible API for one query."""
-        return self.create_embedding(query)['data'][0]['embedding']
-    def embed_documents(self, documents: str) -> list[list]:
-        """langchain-community compatible API for list or queries."""
-        embeddings = self.create_embedding(documents)['data']
-        return [embedding['embedding'] for embedding in embeddings]
-
-from langchain_core.language_models.llms import LLM
-from langchain_core.callbacks.manager import CallbackManagerForLLMRun
-from typing import Any
-from pydantic import Field
 
 
-class LlamaCpp(LLM):
-    model: LlamaCppWrapper = Field(description='Model')
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(
-            model=LlamaCppWrapper(*args, **kwargs)
-        )
-    
-    @property
-    def _llm_type(self) -> str:
-        return 'custom'
-
-    @property
-    def llama(self):
-        return self.model.model
-        
-    def tokenize(self, text: str):
-        """ This function doesn't add bos token. """
-        return self.llama.tokenize(text.encode("utf-8"), add_bos=False, special=True)
-    
-    def detokenize(self, tokens) -> str:
-        return self.llama.detokenize(tokens).decode("utf-8")
-    
-    def token_count(self, text: str):
-        return len(self.tokenize(text))
-    
-    def _call(
-       self,
-       prompt: str,
-       max_tokens: int = 1024,
-       stop: list[str]|None = None,
-       run_manager: CallbackManagerForLLMRun|None = None,
-       **kwargs,
-    ) -> str:
-        output = self.model(
-            prompt=prompt, 
-            stop=stop, 
-            max_tokens=max_tokens, 
-            stream=False,
-            **kwargs
-        )
-        return output
-
-    def _stream(
-       self,
-       prompt: str,
-       max_tokens: int = 1024,
-       stop: list[str]|None = None,
-       run_manager: CallbackManagerForLLMRun|None = None,
-       **kwargs,
-    ):
-        
-        from langchain_core.messages import AIMessageChunk
-        from langchain_core.outputs import ChatGenerationChunk
-        
-        tokens = self.model(
-            prompt=prompt, 
-            stream=True, 
-            stop=stop, 
-            max_tokens=max_tokens, 
-            **kwargs
-        )
-        
-        for token in tokens:
-            chunk = ChatGenerationChunk(message=AIMessageChunk(content=token))
-
-            if run_manager:
-                run_manager.on_llm_new_token(token, chunk=chunk)
-
-            yield chunk
-        
-
-    @property
-    def _identifying_params(self) -> dict[str, Any]:
-        """Get the identifying parameters."""
-        return {"model": self.model}
-
-
-
-
-from typing import Any, Iterator, List, Mapping, Optional
-from langchain_core.callbacks import CallbackManagerForLLMRun
-from langchain_core.language_models.llms import LLM
-from langchain_core.outputs import GenerationChunk
-from langchain_core.pydantic_v1 import Extra
 
 #DEFAULT_MODEL_ID = "mlx-community/quantized-gemma-2b"
 #
@@ -381,7 +263,8 @@ def kv_cache_seq_ltrim(
     model: llama_cpp.Llama, 
     n_keep: int, 
     n_discard: int,
-):
+    automatically_shorten_n_discard: bool = True,
+) -> None:
     """
     Implementation comes from this GitHub repository:
         https://github.com/Limour-dev/llama-python-streamingllm/blob/main/llama_cpp_python_streamingllm.py
@@ -389,17 +272,27 @@ def kv_cache_seq_ltrim(
     Args:
         n_keep(int): number of first tokens to keep.
         n_discard(int) number of tokens to discard.
+        automatically_shorten_n_discard(bool): If True, if n_keep + n_discard > n_tokens, n_discard is shorten instread of raising ValueError exception.
     Returns:
         None
+    Raises:
+        ValueError: if n_keep + n_discard > n_tokens.
     Schema:
           n_keep(3)  n_keep(3)+n_discard(3)
               |        |
     [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] # Initial state.
     [0, 1, 2, -, -, -, 6, 7, 8, 9] # kv_cache_seq_rm
     [0, 1, 2, 6, 7, 8, 9] # kv_cache_seq_shift
-    
+    (does nothing if n_keep > n_tokens)
     """
     n_tokens = model.n_tokens
+    if n_keep > n_tokens:
+        n_keep = n_tokens
+    if n_keep + n_discard > n_tokens:
+        if automatically_shorten_n_discard:
+            n_discard = n_tokens - n_keep
+        else:
+            raise ValueError(f"Cannot discard {n_discard} tokens keeping {n_keep} tokens, where the model holds {n_tokens} tokens.")
     
     model._ctx.kv_cache_seq_rm(-1, n_keep, n_keep + n_discard)
     model._ctx.kv_cache_seq_shift(0, n_keep + n_discard, n_tokens, -n_discard)

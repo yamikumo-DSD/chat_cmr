@@ -11,6 +11,34 @@ class Embedding(ABC):
     def score_passages(self, query: str, passages: list[str]):
         pass
 
+
+
+class JinaEmbeddingV3(Embedding):
+    def __init__(self):
+        if torch.cuda.is_available():
+            self._device = torch.device("cuda:0")
+        elif torch.backends.mps.is_available():
+            self._device = torch.device("mps")
+        else:
+            self._device = torch.device("cpu")
+            
+    def embed_documents(self, docs: list[str], normalize: bool, max_length: int = 0):
+        from transformers import AutoModel
+        
+        model = AutoModel.from_pretrained(
+            "jinaai/jina-embeddings-v3", trust_remote_code=True
+        ).to(self._device)
+        
+        # When calling the `encode` function, you can choose a `task` based on the use case:
+        # 'retrieval.query', 'retrieval.passage', 'separation', 'classification', 'text-matching'
+        # Alternatively, you can choose not to pass a `task`, and no specific LoRA adapter will be used.
+        embeddings = model.encode(docs, task="text-matching")
+
+        return embeddings.tolist()
+
+    def score_passages(self, query: str, passages: list[str]):
+        raise NotImplementedError("")
+
     
 
 class MultilingualE5Small(Embedding):
@@ -76,14 +104,18 @@ class JinaRerankerMultilingual(Embedding):
     def __init__(self, device: str|None = None):
         from lib.backends import suggest_device
         from transformers import AutoModelForSequenceClassification
+        import torch
         
         self._device = device if device else suggest_device()
         self._model = AutoModelForSequenceClassification.from_pretrained(
             'jinaai/jina-reranker-v2-base-multilingual',
-            torch_dtype="auto",
+            #torch_dtype="auto",
+            dtype=torch.float16,
+            #dtype="auto",
+            max_position_embeddings=1026, # Issue: https://huggingface.co/jinaai/jina-reranker-v2-base-multilingual/discussions/40
             trust_remote_code=True,
-        )
-        self._model.to(self._device)
+        ).to(self._device)
+        #self._model.to(self._device)
         self._model.eval()
         
     def embed_documents(self, docs: list[str], normalize: bool, max_length: int):
@@ -94,6 +126,27 @@ class JinaRerankerMultilingual(Embedding):
         scores = self._model.compute_score(sentence_pairs, max_length=1024)
         return scores
 
+
+class JinaRerankerV3(Embedding):
+    def __init__(self, device: str|None = None):
+        from lib.backends import suggest_device
+        from transformers import AutoModel
+        
+        self._device = device if device else suggest_device()
+        self._model = AutoModel.from_pretrained(
+            'jinaai/jina-reranker-v3',
+            dtype="auto",
+            trust_remote_code=True,
+        )
+        self._model.to(self._device)
+        self._model.eval()
+        
+    def embed_documents(self, docs: list[str], normalize: bool, max_length: int):
+        pass
+        
+    def score_passages(self, query: str, passages: list[str]):
+        results = self._model.rerank(query, passages)
+        return [item["relevance_score"] for item in results]
 
         
 def pick_relevant_web_documents(
@@ -106,7 +159,9 @@ def pick_relevant_web_documents(
     n_search_results: int = 10,
     chunk_length: int = 700,
     proxies: dict|None = None,
+    score_thresh = 0,
 ):
+    from functools import partial
     from lib.utils import split_text
     from lib.scraping import (
         fetch_contents_of, 
@@ -132,13 +187,9 @@ def pick_relevant_web_documents(
     if len(df) == 0:
         return []
 
-
-    def fetcher_without_proxies(url):
-        return fetch_contents_of(url, use_chrome=False)
-    def fetcher_with_proxies(url):
-        return fetch_contents_of(url, use_chrome=False, proxies=proxies, timeout=(60, 60))
-
-    df["content"] = df["url"].apply(fetcher_with_proxies if proxies else fetcher_without_proxies)
+    fetcher = partial(fetch_contents_of, use_chrome=False)
+    if proxies: fetcher = partial(fetcher, proxies=proxies, timeout=(60, 60))
+    df["content"] = df["url"].apply(fetcher)
 
     # Split into chunks.
     chunks = []
@@ -149,8 +200,12 @@ def pick_relevant_web_documents(
 
     # Vector search.
     scores = embedding.score_passages(query, texts)
+    for chunk, score in zip(chunks, scores):
+        chunk["score"] = score
     top_indices = np.argsort(scores)[-n_relevant_chunks:][::-1]
+    chunks = [chunks[idx] for idx in top_indices]
+    chunks = list(filter(lambda x: x["score"] > score_thresh, chunks))
 
     del embedding
     
-    return [chunks[idx] for idx in top_indices]
+    return chunks

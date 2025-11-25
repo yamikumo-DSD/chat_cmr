@@ -16,6 +16,7 @@ def stringify_html_elements(elems):
 
             format_mapping = {
                 "[document]": "",
+                "title": "# {}\n",
                 ("strong", "b"): "**{}**",
                 ("em", "i"): "*{}*",
                 ("s", "strike"): "~~{}~~",
@@ -29,6 +30,8 @@ def stringify_html_elements(elems):
                 "h4": "\n#### {}\n",
                 "h5": "\n##### {}\n",
                 "h6": "\n###### {}\n",
+                "head": "",
+                "body": "",
             }
 
             format_str = format_mapping.get(elem["tagName"], "{}")
@@ -41,7 +44,7 @@ def stringify_html_elements(elems):
 
     import re
 
-    text = "".join(stringify_html_element(elem) for elem in elems).strip()
+    text = "".join(map(stringify_html_element, elems)).strip()
     text = re.sub(r"\n{2,}", "\n", text)
 
     return text
@@ -80,22 +83,20 @@ def youtube_url2id(url: str) -> str:
     
 def is_youtube_url(url: str) -> bool:
     return youtube_url2id(url) is not None
-    
 
+    
 def fetch_youtube_transcript(video_url: str) -> str:
     from youtube_transcript_api import YouTubeTranscriptApi
     import re
     video_id = youtube_url2id(video_url) 
     if not video_id:
         raise ValueError("Invalid Youtube URL.")
+
+    ytt = YouTubeTranscriptApi()
+    transcript_list = ytt.list(video_id)
+    for tr in transcript_list:
+        return "\n".join([snippet.text for snippet in tr.fetch().snippets])
     
-    transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-    transcript_doc = ""
-    for transcript in transcript_list:
-        for tr in transcript.fetch():
-            transcript_doc += tr["text"]
-    transcript_doc = re.sub(r"\[(.+?)\]", r"",transcript_doc)
-    return transcript_doc
 
 
 def fetch_5ch_posts_df(url: str) -> pd.DataFrame:
@@ -322,17 +323,16 @@ def ddg_search_results_df(
     """
     
     import nest_asyncio
-    import duckduckgo_search
+    from ddgs import DDGS
     nest_asyncio.apply()
     
-    with duckduckgo_search.DDGS() as ddgs:
-        items = list(ddgs.text(
-            keywords=query,
-            region='wt-wt', 
-            safesearch='off',
-            timelimit=timelimit,
-            max_results=n_results
-        ))
+    items = list(DDGS().text(
+        query=query,
+        region='wt-wt', 
+        safesearch='off',
+        timelimit=timelimit,
+        max_results=n_results
+    ))
     if len(items) == 0:
         # Returns DataFrame with zero items.
         return pd.DataFrame(columns=["rank", "title", "url", "snippet"])
