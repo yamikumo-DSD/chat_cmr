@@ -2,12 +2,19 @@ import llama_cpp
 from llama_cpp import Llama, LlamaGrammar
 from llama_cpp.llama import StoppingCriteriaList, LogitsProcessorList
 from llama_cpp.llama_types import CreateCompletionResponse, CreateCompletionStreamResponse
+import llama_cpp.llama_types as llama_types
 from typing import (
     Union,
     List,
     Iterator,
     Optional,
     Dict,
+    Any,
+    Literal,
+    Tuple,
+    Union,
+    Protocol,
+    cast,
 )
 import os
 import sys
@@ -21,6 +28,12 @@ import fnmatch
 import warnings
 import contextlib
 import multiprocessing
+import numpy as np
+
+from llama_cpp.llama_chat_format import Llava15ChatHandler
+
+
+
 
 class LlamaCppSpecial(Llama):
     def __init__(self, *args, **kwargs) -> None:
@@ -38,6 +51,8 @@ class LlamaCppSpecial(Llama):
         text = text.split(token_bos)[1] if text.startswith(token_bos) else text
         return len(self.tokenize(text.encode("utf-8"), add_bos=add_bos, special=special))
 
+    def add_bos(self) -> bool:
+        return self._model.get_add_bos()
         
     def _create_completion(
         self,
@@ -922,4 +937,572 @@ class LlamaCppSpecial(Llama):
             logits_processor=logits_processor,
             grammar=grammar,
             detokenize_special=detokenize_special,
+        )
+
+
+
+
+
+
+
+
+# MULTI MODAL
+
+IMAGE_URL_TAGS = ("<|image_url_starts|>", "<|image_url_ends|>")
+
+proj_types = [
+    "PROJECTOR_TYPE_PIXTRAL",
+    "PROJECTOR_TYPE_QWEN2VL",
+    "PROJECTOR_TYPE_QWEN25VL",
+    "PROJECTOR_TYPE_QWEN3VL",
+    "PROJECTOR_TYPE_LLAMA4",
+    "PROJECTOR_TYPE_INTERNVL",
+    "PROJECTOR_TYPE_LIGHTONOCR",
+    "PROJECTOR_TYPE_LFM2",
+    "PROJECTOR_TYPE_GLM4V",
+]
+
+def get_boi_eoi(proj_type: str):
+    """
+    Reference:
+        https://github.com/ggml-org/llama.cpp/blob/a52dc60ba3ae0ef1e941ce9a4585672cc335a175/tools/mtmd/mtmd.cpp#L293
+    """
+    return {
+        "PROJECTOR_TYPE_GEMMA3": ("<start_of_image>", "<end_of_image>"),
+        #"PROJECTOR_TYPE_IDEFICS3": ("", ""),
+        "PROJECTOR_TYPE_PIXTRAL": ("", "[IMG_END]"),
+        "PROJECTOR_TYPE_QWEN2VL": ("<|vision_start|>", "<|vision_end|>"),
+        "PROJECTOR_TYPE_QWEN25VL": ("<|vision_start|>", "<|vision_end|>"),
+        "PROJECTOR_TYPE_QWEN3VL": ("<|vision_start|>", "<|vision_end|>"),
+        "PROJECTOR_TYPE_LLAMA4": ("<|image_start|>", "<|image_end|>"),
+        "PROJECTOR_TYPE_INTERNVL": ("<img>", "</img>"),
+        "PROJECTOR_TYPE_LIGHTONOCR": ("<|im_start|>", "<|im_end|>"),
+        "PROJECTOR_TYPE_LFM2": ("<|image_start|>", "<|image_end|>"),
+        "PROJECTOR_TYPE_GLM4V": ("<|begin_of_image|>", "<|end_of_image|>"),
+    }[proj_type]
+
+
+
+class MTMDCpp(Llava15ChatHandler):
+    """
+    llama.cpp or JamesPeng's llama-cpp-python provides more utility functions related to mtmd.
+    It might be better to implement methods based on them.
+    """
+
+    
+    
+    @staticmethod
+    def _load_file(path: str) -> bytes:
+        with open(path, "rb") as f:
+            return f.read()
+            
+    @staticmethod
+    def _load_image(path: str) -> bytes:
+        return MTMDCpp._load_file(path)
+
+    @staticmethod
+    def hash_file(path, length: int = 8) -> str:
+        import hashlib
+        hash = hashlib.sha256(MTMDCpp._load_file(path)).hexdigest()
+        return hash[:length]
+
+    @staticmethod
+    def remove_prefix(text, prefix) -> str:
+        if not text.startswith(prefix):
+            message = f"""The text does not start with the given prefix.
+Given text: '''{text}'''
+
+
+Given prefix: '''{prefix}'''"""
+            raise ValueError(message)
+        return text[len(prefix):]
+            
+    @staticmethod
+    def get_image_urls(prompt):
+        import re
+        image_urls: List[str] = []
+        starts, ends = IMAGE_URL_TAGS[0], IMAGE_URL_TAGS[1]
+        return re.findall(f"{starts.replace("|", "\\|")}(.+?){ends.replace("|", "\\|")}", prompt)
+
+    @staticmethod
+    def input_text(llama, n_tokens: Optional[int] = None) -> str:
+        if n_tokens is None:
+            n_tokens = llama.n_tokens
+        elif n_tokens == -1:
+            n_tokens = len(llama.input_ids)
+        input_ids = llama.input_ids[:n_tokens]
+        input_text = llama.detokenize(input_ids, special=True).decode("utf-8")
+        return input_text
+        
+    @staticmethod
+    def shared_prefix(t1: str, t2: str, llama) -> str:
+        """ 
+        Returns shared initial part of the paired texts given. 
+        This method is desinged not to cut in the middle of token like;
+        "<|im_start|>" and "<|im_end|>" -> "<|im_"
+        """
+        prefix = []
+        for t, s in zip(
+            llama.tokenize(t1.encode(), add_bos=False, special=True), 
+            llama.tokenize(t2.encode(), add_bos=False, special=True)
+        ):
+            if t != s:
+                break
+            prefix.append(t)
+        return llama.detokenize(prefix, special=True).decode("utf-8")
+
+    @staticmethod
+    def insert_hash_before_image_tags(
+        text: str,
+        *,
+        skip_if_already_hashed: bool = True,
+        on_missing_file: str = "raise",  # "raise" | "keep" | "empty"
+    ) -> str:
+        """
+        Insert: <|hash_starts|>HASH<|hash_ends|> immediately before each image tag block:
+          <|image_url_starts|>/path/to/img.jpg<|image_url_ends|>
+    
+        Example output:
+          ...<|hash_starts|>abc123<|hash_ends|><|image_url_starts|>/path...<|image_url_ends|>...
+    
+        Parameters
+        ----------
+        text:
+            Input text containing 0+ image tag blocks.
+        skip_if_already_hashed:
+            If True, won’t insert another <hash>...</hash> if one is already
+            immediately before the image tag (allowing whitespace).
+        on_missing_file:
+            What to do if the path doesn’t exist:
+            - "raise": raise FileNotFoundError
+            - "keep": leave that tag untouched (no insertion)
+            - "empty": insert <|hash_starts|><|hash_ends|> (empty hash)
+        """
+        import re
+        from pathlib import Path
+        from typing import Callable, Dict, Optional
+        
+        start_tag, end_tag = IMAGE_URL_TAGS
+        pattern = re.compile(
+            re.escape(start_tag) + r"(.*?)" + re.escape(end_tag),
+            flags=re.DOTALL,
+        )
+        already_hash_pat = re.compile(r"<\|hash_starts\|>.*?<\|hash_ends\|>\s*$", flags=re.DOTALL)
+    
+        cache: Dict[str, str] = {}
+    
+        def repl(m: re.Match) -> str:
+            nonlocal text
+            start_idx = m.start()
+    
+            if skip_if_already_hashed:
+                prefix = text[:start_idx]
+                if already_hash_pat.search(prefix) is not None:
+                    return m.group(0)
+    
+            raw_path = m.group(1).strip()
+            # Keep original raw_path inside the tag; we only need it for hashing.
+            norm_key = str(Path(raw_path))
+    
+            if norm_key in cache:
+                h = cache[norm_key]
+            else:
+                p = Path(raw_path)
+                if not p.exists():
+                    if on_missing_file == "raise":
+                        raise FileNotFoundError(f"Image path not found: {raw_path}")
+                    if on_missing_file == "keep":
+                        return m.group(0)
+                    if on_missing_file == "empty":
+                        h = ""
+                    else:
+                        raise ValueError(f"Unknown on_missing_file={on_missing_file!r}")
+                else:
+                    h = MTMDCpp.hash_file(raw_path)
+                cache[norm_key] = h
+    
+            return f"<|hash_starts|>{h}<|hash_ends|>{m.group(0)}"
+    
+        # Note: repl() reads `text` to check idempotency; so we run sub on the original.
+        return pattern.sub(repl, text)
+    
+
+
+    def token_count(
+        self, 
+        text, 
+        llama: LlamaCppSpecial,
+        add_bos=False, 
+        special=True,
+        hash_insertion=True,
+    ) -> int:
+        # Initialize mtmd context
+        self._init_mtmd_context(llama)
+        assert self.mtmd_ctx is not None
+
+
+        if hash_insertion:
+            text = self.insert_hash_before_image_tags(text)
+
+        image_urls = self.get_image_urls(text)
+
+        # Get the default media marker
+        media_marker = self._mtmd_cpp.mtmd_default_marker().decode('utf-8')
+
+        # Replace image URLs in text with media markers
+        for image_url in image_urls:
+            text = text.replace(image_url, media_marker)
+            
+        # Remove tags
+        url_start, url_end = IMAGE_URL_TAGS
+        text = text.replace(url_start, "").replace(url_end, "")
+
+        # Create bitmaps from images
+        bitmaps = []
+        bitmap_cleanup = []
+        try:
+            for image_url in image_urls:
+                image_bytes = self.load_image(image_url)
+                bitmap = self._create_bitmap_from_bytes(image_bytes)
+                bitmaps.append(bitmap)
+                bitmap_cleanup.append(bitmap)
+
+            # Create input text structure
+            bos = llama.detokenize([llama.token_bos()], special=True).decode("utf-8")
+            text = (bos if add_bos else "") + text
+            input_text = self._mtmd_cpp.mtmd_input_text()
+            input_text.text = text.encode('utf-8')
+            input_text.add_special = False
+            input_text.parse_special = special
+
+            # Create input chunks
+            chunks = self._mtmd_cpp.mtmd_input_chunks_init()
+            if chunks is None:
+                raise ValueError("Failed to create input chunks")
+
+            try:
+                # Tokenize text and images together
+                bitmap_array = (self._mtmd_cpp.mtmd_bitmap_p_ctypes * len(bitmaps))(*bitmaps)
+                result = self._mtmd_cpp.mtmd_tokenize(
+                    self.mtmd_ctx,
+                    chunks,
+                    ctypes.byref(input_text),
+                    bitmap_array,
+                    len(bitmaps)
+                )
+                
+                # Process each chunk
+                n_chunks = self._mtmd_cpp.mtmd_input_chunks_size(chunks)
+
+                n_tokens: int = 0
+                for i in range(n_chunks):
+                    chunk = self._mtmd_cpp.mtmd_input_chunks_get(chunks, i)
+                    if chunk is None: continue
+
+                    chunk_type = self._mtmd_cpp.mtmd_input_chunk_get_type(chunk)
+
+                    if chunk_type == self._mtmd_cpp.mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_TEXT:
+                        n_tokens_out = ctypes.c_size_t()
+                        tokens_ptr = self._mtmd_cpp.mtmd_input_chunk_get_tokens_text(chunk, ctypes.byref(n_tokens_out))
+                        n_tokens += n_tokens_out.value
+                    elif chunk_type in [
+                        self._mtmd_cpp.mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_IMAGE, 
+                        self._mtmd_cpp.mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_AUDIO
+                    ]:
+                        n_pos = self._mtmd_cpp.mtmd_input_chunk_get_n_pos(chunk)
+                        n_tokens += n_pos
+            finally:
+                self._mtmd_cpp.mtmd_input_chunks_free(chunks)
+        finally:
+            for bitmap in bitmap_cleanup:
+                self._mtmd_cpp.mtmd_bitmap_free(bitmap)
+            return n_tokens
+
+
+    def create_completion(
+        self,
+        *,
+        llama: LlamaCppSpecial,
+        prompt: str,
+        prefix_to_skip_reeval: Optional[str] = None,
+        temperature: float = 0.2,
+        top_p: float = 0.95,
+        top_k: int = 40,
+        min_p: float = 0.05,
+        typical_p: float = 1.0,
+        stream: bool = False,
+        stop: Optional[Union[str, List[str]]] = [],
+        seed: Optional[int] = None,
+        max_tokens: Optional[int] = None,
+        presence_penalty: float = 0.0,
+        frequency_penalty: float = 0.0,
+        repeat_penalty: float = 1.1,
+        top_n_sigma: float = -1.00,
+        mirostat_mode: int = 0,
+        mirostat_tau: float = 5.0,
+        mirostat_eta: float = 0.1,
+        xtc_threshold: float = 0.1,
+        xtc_probability: float = 0.0,
+        dry_multiplier: float = 0.0,
+        dry_base: float = 1.75,
+        dry_allowed_length: int = 2,
+        dry_penalty_last_n:int = 0,
+        dry_seq_breakers: list[str] = ["\n", ":", "\"", "*"],
+        model: Optional[str] = None,
+        logits_processor: Optional[LogitsProcessorList] = None,
+        grammar: Optional[LlamaGrammar] = None,
+        logit_bias: Optional[Dict[str, float]] = None,
+        logprobs: Optional[bool] = None,
+        top_logprobs: Optional[int] = None,
+        detokenize_special = True,
+        **kwargs,  # type: ignore
+    ) -> Union[llama_types.CreateChatCompletionResponse, Iterator[llama_types.CreateChatCompletionStreamResponse], ]:
+        # Initialize mtmd context
+        self._init_mtmd_context(llama)
+        assert self.mtmd_ctx is not None
+
+        
+        # Preprocess prompt
+        if prefix_to_skip_reeval is not None:
+            try:
+                prefix_to_skip_reeval = self.insert_hash_before_image_tags(prefix_to_skip_reeval)
+                prompt = self.insert_hash_before_image_tags(prompt)
+                
+                prefix_to_skip_reeval = self.shared_prefix(prompt, prefix_to_skip_reeval, llama)
+                prompt = self.remove_prefix(prompt, prefix_to_skip_reeval)
+            except BaseException as e:
+                print(e)
+                prefix_to_skip_reeval = None
+        
+        image_urls = self.get_image_urls(prompt)
+        
+        # Remove tags and Replace image URLs in text with media markers
+        # Before: <|image_url_starts|>/path/to/image.jpg<|image_url_ends|>
+        url_start, url_end = IMAGE_URL_TAGS
+        text = prompt.replace(url_start, "").replace(url_end, "")
+        media_marker = self._mtmd_cpp.mtmd_default_marker().decode('utf-8')
+        for image_url in image_urls:
+            text = text.replace(image_url, media_marker)
+            
+        # At this point, the prompt became like;
+        # From: <|image_url_starts|>/path/to/image.jpg<|image_url_ends|>
+        # From: <|hash_starts|>12345678<|hash_ends|><__media__>
+        
+        if self.verbose:
+            print(text, file=sys.stderr)
+        
+        # Create bitmaps from images
+        bitmaps = []
+        bitmap_cleanup = []
+        try:
+            for image_url in image_urls:
+                image_bytes = self.load_image(image_url)
+                bitmap = self._create_bitmap_from_bytes(image_bytes)
+                bitmaps.append(bitmap)
+                bitmap_cleanup.append(bitmap)
+            
+            # Create input text structure
+            input_text = self._mtmd_cpp.mtmd_input_text()
+            input_text.text = text.encode('utf-8')
+            input_text.add_special = True
+            input_text.parse_special = True
+
+            # Create input chunks
+            chunks = self._mtmd_cpp.mtmd_input_chunks_init()
+            if chunks is None:
+                raise ValueError("Failed to create input chunks")
+
+            try:
+                # Tokenize text and images together
+                bitmap_array = (self._mtmd_cpp.mtmd_bitmap_p_ctypes * len(bitmaps))(*bitmaps)
+                result = self._mtmd_cpp.mtmd_tokenize(
+                    self.mtmd_ctx,
+                    chunks,
+                    ctypes.byref(input_text),
+                    bitmap_array,
+                    len(bitmaps)
+                )
+
+                if result != 0:
+                    raise ValueError(f"Failed to tokenize input: error code {result}")
+
+                # Reset llama context
+                if prefix_to_skip_reeval is not None:
+                    n_prefix_tokens = self.token_count(prefix_to_skip_reeval, llama, special=True, hash_insertion=False)
+                    llama.n_tokens = n_prefix_tokens
+                    n_past = llama.n_tokens
+                    print(f"Prefix matches and skipped reevaluation of {n_prefix_tokens} tokens.")
+                else:
+                    llama.reset()
+                    llama._ctx.memory_clear(True)
+                    llama.n_tokens = 0
+                    llama.input_ids = np.zeros(len(llama.input_ids), dtype=llama.input_ids.dtype)
+                    n_past = 0
+
+                # Process each chunk
+                n_chunks = self._mtmd_cpp.mtmd_input_chunks_size(chunks)
+
+                for i in range(n_chunks):
+                    chunk = self._mtmd_cpp.mtmd_input_chunks_get(chunks, i)
+                    if chunk is None: continue
+
+                    chunk_type = self._mtmd_cpp.mtmd_input_chunk_get_type(chunk)
+
+                    # The first and last chunk must be TEXT.
+                    if i == 0 or i == n_chunks - 1:
+                        assert chunk_type == self._mtmd_cpp.mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_TEXT
+
+                    if chunk_type == self._mtmd_cpp.mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_TEXT:
+                        # Handle text chunk
+                        n_tokens_out = ctypes.c_size_t()
+                        tokens_ptr = self._mtmd_cpp.mtmd_input_chunk_get_tokens_text(chunk, ctypes.byref(n_tokens_out))
+                        chunk_n_tokens = n_tokens_out.value
+
+                        if tokens_ptr and n_tokens_out.value > 0:
+                            # Convert ctypes array to Python list
+                            tokens = [tokens_ptr[j] for j in range(n_tokens_out.value)]
+
+                            if llama.n_tokens + len(tokens) > llama.n_ctx():
+                                raise ValueError(
+                                    f"Prompt exceeds n_ctx: {llama.n_tokens + len(tokens)} > {llama.n_ctx()}"
+                                )
+                            #llama.n_tokens = n_past
+                            llama.eval(tokens)
+                            n_past = llama.n_tokens
+
+                    elif chunk_type in [
+                        self._mtmd_cpp.mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_IMAGE, 
+                        self._mtmd_cpp.mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_AUDIO
+                    ]:
+                        # Handle image/audio chunk using helper
+                        chunk_n_tokens = self._mtmd_cpp.mtmd_input_chunk_get_n_tokens(chunk)
+
+                        if n_past + chunk_n_tokens > llama.n_ctx():
+                            raise ValueError(
+                                f"Prompt exceeds n_ctx: {n_past + chunk_n_tokens} > {llama.n_ctx()}"
+                            )
+
+                        new_n_past = llama_cpp.llama_pos(0)
+                        result = self._mtmd_cpp.mtmd_helper_eval_chunk_single(
+                            self.mtmd_ctx,
+                            llama._ctx.ctx,
+                            chunk,
+                            llama_cpp.llama_pos(llama.n_tokens),
+                            llama_cpp.llama_seq_id(0),
+                            llama.n_batch,
+                            False,  # logits_last
+                            ctypes.byref(new_n_past)
+                        )
+                        for k in range(llama.n_tokens, new_n_past.value):
+                            llama.input_ids[k] = 0
+
+                        if result != 0:
+                            raise ValueError(f"Failed to evaluate chunk: error code {result}")
+
+                        # Update llama's token count
+                        # `llama.eval` automatically increases `llama.n_tokens` but `mtmd_helper_eval_chunk_single` doesn't.
+                        llama.n_tokens = new_n_past.value
+
+                # Get prompt tokens to avoid a cache miss
+                prompt = llama.input_ids[: llama.n_tokens].tolist()
+
+            finally:
+                self._mtmd_cpp.mtmd_input_chunks_free(chunks)
+
+        finally:
+            # Cleanup bitmaps
+            for bitmap in bitmap_cleanup:
+                self._mtmd_cpp.mtmd_bitmap_free(bitmap)
+
+
+        return llama.create_completion(
+            prompt=prompt,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            min_p=min_p,
+            typical_p=typical_p,
+            logprobs=top_logprobs if logprobs else None,
+            stream=stream,
+            stop=stop,
+            seed=seed,
+            max_tokens=max_tokens,
+            presence_penalty=presence_penalty,
+            frequency_penalty=frequency_penalty,
+            repeat_penalty=repeat_penalty,
+            top_n_sigma=top_n_sigma,
+            mirostat_mode=mirostat_mode,
+            mirostat_tau=mirostat_tau,
+            mirostat_eta=mirostat_eta,
+            xtc_threshold=xtc_threshold,
+            xtc_probability=xtc_probability,
+            dry_multiplier=dry_multiplier,
+            dry_base=dry_base,
+            dry_allowed_length=dry_allowed_length,
+            dry_penalty_last_n=dry_penalty_last_n,
+            dry_seq_breakers=dry_seq_breakers,
+            model=model,
+            logits_processor=logits_processor,
+            grammar=grammar,
+            logit_bias=logit_bias,
+            detokenize_special=detokenize_special,
+        )
+
+    def __call__(self, *args, **kwargs):
+        return self.create_completion(*args, **kwargs)
+        
+    def mtmd_free(self):
+        if self.mtmd_ctx is not None:
+            self._mtmd_cpp.mtmd_free(self.mtmd_ctx)
+            self.mtmd_ctx = None
+
+
+
+class MTMDCppAutoPrefix(MTMDCpp):
+    boi_eoi: Tuple[str, str]
+    def __init__(self, clip_model_path, boi_eoi: Tuple[str, str], *args, **kwargs) -> None:
+        super().__init__(clip_model_path, *args, **kwargs)
+        self.boi_eoi = boi_eoi
+        
+    def extract_prefix(self, prompt: str, llama: LlamaCppSpecial) -> str:
+        import re
+        from lib.text_utils import indexed_placeholders
+        
+        boi, eoi = self.boi_eoi
+        url_starts, url_ends = IMAGE_URL_TAGS
+        boi_escaped = boi.replace("|", r"\|").replace("[", r"\[").replace("]", r"\]")
+        eoi_escaped = eoi.replace("|", r"\|").replace("[", r"\[").replace("]", r"\]")
+        input_ids = llama.input_ids[:llama.n_tokens]
+        input_text = llama.detokenize(input_ids, special=True).decode("utf-8")
+
+        input_text = indexed_placeholders(
+            target=input_text, 
+            pattern=boi_escaped + ".+" + eoi_escaped,
+            placeholder=f"{url_starts}{{num}}{url_ends}"
+        )
+        
+        image_urls = self.get_image_urls(prompt)
+        for i in range(len(image_urls)):
+            input_text = input_text.replace(
+                f"{url_starts}{i}{url_ends}", 
+                f"{url_starts}{image_urls[i]}{url_ends}"
+            )
+        # Remove hash tags AFTER slicing.
+        # The order matters, because, otherwise, it doesn't know the images are identical or not without hash value.
+        input_text = self.shared_prefix(
+            input_text, 
+            self.insert_hash_before_image_tags(prompt),
+            llama,
+        )
+        input_text = re.sub(r"<\|hash_starts\|>.+?<\|hash_ends\|>", "", input_text)
+        input_text = input_text.split("<|hash_starts|>")[0]
+        return input_text
+
+    def create_completion(self, prompt, llama, *args, **kwargs):
+        prefix = self.extract_prefix(prompt, llama)
+        return super().create_completion(
+            prompt=prompt,
+            llama=llama,
+            prefix_to_skip_reeval=prefix,
+            *args, **kwargs
         )
